@@ -452,13 +452,13 @@ async def game_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         start_bonus = char_data["buff"].get("starting_lemons", 0)
         game["lemons"][pid] += start_bonus
 
+        await context.bot.send_message(pid, f"🍋 Your character: <b>{char_name}</b>.\n<i>{char_data['description']}</i>", parse_mode='HTML')
+        
         if char_data["buff"].get("roll_bonus"):
             roll = random.randint(1, 5)
             bonus = roll * 5
             game["lemons"][pid] += bonus
             await context.bot.send_message(pid, f"🎲 {char_name} rolled {roll}! +{bonus} lemons. Total: {game['lemons'][pid]}.")
-        else:
-            await context.bot.send_message(pid, f"🍋 Your character: <b>{char_name}</b>.\n<i>{char_data['description']}</i>", parse_mode='HTML')
 
         if "min_bid" in char_data["debuff"]:
             game.setdefault("min_bid", {})[pid] = char_data["debuff"]["min_bid"]
@@ -544,9 +544,16 @@ async def bid_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     _, game_id, bid_str = parts
     bid = int(bid_str)
     game = games.get(game_id)
+
     if not game:
         await query.edit_message_text("Game not found.", parse_mode='HTML')
         return
+    
+    if not game.get("round_active"):
+        await query.edit_message_text("This round has already ended.", parse_mode='HTML')
+        return
+
+    
     if game["status"] != "active":
         await query.edit_message_text("Game is not active.", parse_mode='HTML')
         return
@@ -594,6 +601,12 @@ async def bid_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         await resolve_round(context, game, game_id)
    
 async def resolve_round(context, game, game_id):
+    # Guard: prevent double resolution
+    if not game.get("round_active"):
+        return
+    # Immediately mark as resolved to block any further calls
+    game["round_active"] = False
+
     bids = game["round_bids"]
     sorted_desc = sorted(bids.items(), key=lambda x: x[1], reverse=True)
     highest_bid = sorted_desc[0][1] if sorted_desc else 0
@@ -719,8 +732,9 @@ async def resolve_round(context, game, game_id):
         personal = result + f"\n\n✨ <b>Your lemons:</b> {game['lemons'][pid]} | <b>Your crowns:</b> {game['crowns'][pid]}"
         await context.bot.send_message(pid, personal, parse_mode='HTML')
 
-    game["round_active"] = False
+    # round_active is already False – no need to set again
     game["current_round"] += 1
+
     await start_next_round(context, game, game_id)
 
 async def start_next_round(context, game, game_id):
@@ -772,14 +786,20 @@ async def start_next_round(context, game, game_id):
 async def bid_timeout(context, game_id, seconds):
     await asyncio.sleep(seconds)
     game = games.get(game_id)
+    # Guard: if game no longer exists or round is not active, exit
     if not game or not game.get("round_active"):
         return
-    
+
+    # Guard: if all bids are already in, do nothing
+    if len(game["round_bids"]) == len(game["players"]):
+        return
+
+    # Auto‑bid 0 for all who haven't bid
     for pid in game["players"]:
         if pid not in game["round_bids"]:
             game["round_bids"][pid] = 0
             await context.bot.send_message(pid, "⏰ Time's up! You have been auto‑bid 0 lemons.", parse_mode='HTML')
-    
+
     for pid in game["players"]:
         await context.bot.send_message(pid, "⏰ 60 seconds have passed. All bids are now final.", parse_mode='HTML')
 
