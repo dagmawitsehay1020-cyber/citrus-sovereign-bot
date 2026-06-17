@@ -417,6 +417,8 @@ async def game_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("You are not in any lobby.")
         return
     game = games[game_id]
+    game["timeout_task"] = None
+
     if user_id != game.get("game_starter"):
         starter_username = game['usernames'].get(game['game_starter'], f"Player{game['game_starter']}")
         await context.bot.send_message(user_id, f"You did not start this game. Please politely ask and/or annoyingly badger {starter_username} to start the game. ", parse_mode='HTML')
@@ -486,18 +488,6 @@ async def game_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             game.setdefault("see_lowest_bid", {})[pid] = char_data["buff"]["see_lowest_bid"]
 
     for pid in game["players"]:
-        uname = game["usernames"][pid]
-        cname = game["characters"][pid]
-        desc = CHARACTERS[cname]["description"]
-        personal_msg = (
-            f"<b>🎭 Your Character:</b>\n\n"
-            f"<b>Username</b>: <i>{uname}</i>\n"
-            f"<b>Character</b>: <i>{cname}</i>\n"
-            f"<b>Description</b>: <i>{desc}</i>"
-        )
-        await context.bot.send_message(pid, personal_msg, parse_mode='HTML')
-
-    for pid in game["players"]:
         await context.bot.send_message(pid, get_random_message("game_started"), parse_mode='HTML')
 
     await start_next_round(context, game, game_id)  
@@ -552,13 +542,8 @@ async def bid_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not game.get("round_active"):
         await query.edit_message_text("This round has already ended.", parse_mode='HTML')
         return
-
-    
     if game["status"] != "active":
         await query.edit_message_text("Game is not active.", parse_mode='HTML')
-        return
-    if not game["round_active"]:
-        await query.edit_message_text(get_random_message("no_round_active"), parse_mode='HTML')
         return
     if user_id not in game["players"]:
         await query.edit_message_text("You are not a player in this game.", parse_mode='HTML')
@@ -732,8 +717,11 @@ async def resolve_round(context, game, game_id):
         personal = result + f"\n\n✨ <b>Your lemons:</b> {game['lemons'][pid]} | <b>Your crowns:</b> {game['crowns'][pid]}"
         await context.bot.send_message(pid, personal, parse_mode='HTML')
 
-    # round_active is already False – no need to set again
     game["current_round"] += 1
+
+    if game.get("timeout_task"):
+        game["timeout_task"].cancel()
+        game["timeout_task"] = None
 
     await start_next_round(context, game, game_id)
 
@@ -781,27 +769,32 @@ async def start_next_round(context, game, game_id):
             reply_markup=reply_markup
         )
 
-        asyncio.create_task(bid_timeout(context, game_id, 60))
+        if game.get("timeout_task"):
+            game["timeout_task"].cancel()
+            game["timeout_task"] = None
+
+        game["timeout_task"] = asyncio.create_task(bid_timeout(context, game_id, 60))
 
 async def bid_timeout(context, game_id, seconds):
     await asyncio.sleep(seconds)
     game = games.get(game_id)
-    # Guard: if game no longer exists or round is not active, exit
+
     if not game or not game.get("round_active"):
         return
 
-    # Guard: if all bids are already in, do nothing
     if len(game["round_bids"]) == len(game["players"]):
         return
 
-    # Auto‑bid 0 for all who haven't bid
     for pid in game["players"]:
         if pid not in game["round_bids"]:
             game["round_bids"][pid] = 0
-            await context.bot.send_message(pid, "⏰ Time's up! You have been auto‑bid 0 lemons.", parse_mode='HTML')
+            msg = "⏰ Time's up! You have been auto‑bid 0 lemons. All bids are now final."
+        else:
+            msg = "⏰ 60 seconds have passed. All bids are now final."
 
-    for pid in game["players"]:
-        await context.bot.send_message(pid, "⏰ 60 seconds have passed. All bids are now final.", parse_mode='HTML')
+        await context.bot.send_message(pid, msg, parse_mode='HTML')
+
+    game["timeout_task"] = None
 
     if len(game["round_bids"]) == len(game["players"]):
         await resolve_round(context, game, game_id)
@@ -853,13 +846,93 @@ async def end_game(context, game, game_id):
 
     final_text = get_random_message("final_summary", summary=summary)
 
-    for pid in game["players"]:
-        await context.bot.send_message(pid, final_text, parse_mode='HTML')
+    keyboard = [
+        [InlineKeyboardButton("🔄 Restart Game", callback_data=f"restart|{game_id}")],
+        [InlineKeyboardButton("❌ End Game", callback_data=f"delete|{game_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
-    for pid in game['players']:
+    for pid in game["players"]:
+        await context.bot.send_message(pid, final_text, parse_mode='HTML', reply_markup=reply_markup)
+
+    game["ended"] = True
+    game["cleanup_task"] = asyncio.create_task(cleanup_game(context, game_id))
+
+async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    _, game_id = data.split('|')
+    game = games.get(game_id)
+    
+    if not game:
+        await query.edit_message_text("Game already ended.")
+        return
+    
+    if game.get("cleanup_task"):
+        game["cleanup_task"].cancel()
+
+    for pid in game["players"]:
+        await context.bot.send_message(pid, "🏁 The game has been ended by a player. Thanks for playing!", parse_mode='HTML')
+        if pid in user_game:
+            del user_game[pid]
+
+    del games[game_id]
+
+    await query.edit_message_text("✅ Game deleted successfully.")
+
+async def cleanup_game(context, game_id):
+    await asyncio.sleep(300)
+    game = games.get(game_id)
+    if not game:
+        return
+    if not game.get("ended"):
+        return
+    for pid in game["players"]:
+        await context.bot.send_message(pid, "🕐 Restart window expired. Game has been archived.", parse_mode='HTML')
         if pid in user_game:
             del user_game[pid]
     del games[game_id]
+
+async def restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    _, game_id = data.split('|')
+    game = games.get(game_id)
+    if not game:
+        await query.edit_message_text("Game no longer exists.")
+        return
+    if not game.get("ended"):
+        await query.edit_message_text("Game is still active.")
+        return
+
+    if game.get("cleanup_task"):
+        game["cleanup_task"].cancel()
+        game["cleanup_task"] = None
+    
+    game["ended"] = False
+    game["current_round"] = 1
+    game["total_rounds"] = 5
+    game["crowns"] = {pid: 0 for pid in game["players"]}
+    game["round_active"] = False
+    game["round_bids"] = {}
+    game["rounds_history"] = []
+    game["timeout_task"] = None
+
+    for pid in game["players"]:
+        char_name = game["characters"][pid]
+        char_data = CHARACTERS[char_name]
+        game["lemons"][pid] = 100 + char_data["buff"].get("starting_lemons", 0)
+        if char_data["buff"].get("roll_bonus"):
+            roll = random.randint(1, 5)
+            bonus = roll * 5
+            game["lemons"][pid] += bonus
+            await context.bot.send_message(pid, f"🎲 {char_name} re‑rolled {roll}! +{bonus} lemons. Total: {game['lemons'][pid]}.")
+
+    await start_next_round(context, game, game_id)
+    
+    await query.edit_message_text("✅ Game restarted! Check your DMs for the new round.")
 
 async def leave_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1062,10 +1135,12 @@ def main():
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("leave", leave_command))
     application.add_handler(CallbackQueryHandler(bid_button_callback, pattern="^bid\\|"))
+    application.add_handler(CallbackQueryHandler(restart_callback, pattern="^restart\\|"))
     application.add_handler(CommandHandler("stopgame", stop_game_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CallbackQueryHandler(help_callback, pattern="^help_"))
     application.add_handler(CommandHandler("about", about_command))
+    application.add_handler(CallbackQueryHandler(delete_callback, pattern="^delete\\|"))
 
     try:
         asyncio.get_running_loop()
