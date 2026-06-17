@@ -1047,6 +1047,12 @@ def main():
     application.add_handler(CallbackQueryHandler(help_callback, pattern="^help_"))
     application.add_handler(CommandHandler("about", about_command))
 
+    try:
+        asyncio.get_running_loop()
+    except:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     application.run_polling()
 if __name__ == "__main__":
     main()
