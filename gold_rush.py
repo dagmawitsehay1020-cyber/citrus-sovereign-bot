@@ -910,7 +910,7 @@ async def restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if game.get("cleanup_task"):
         game["cleanup_task"].cancel()
         game["cleanup_task"] = None
-    
+
     game["ended"] = False
     game["current_round"] = 1
     game["total_rounds"] = 5
@@ -920,19 +920,60 @@ async def restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     game["rounds_history"] = []
     game["timeout_task"] = None
 
+    all_char_names = list(CHARACTERS.keys())
+    if len(game["players"]) == 2 and "Spy" in all_char_names:
+        all_char_names.remove("Spy")
+    random.shuffle(all_char_names)
+
     for pid in game["players"]:
-        char_name = game["characters"][pid]
+        char_name = all_char_names.pop(0)
         char_data = CHARACTERS[char_name]
-        game["lemons"][pid] = 100 + char_data["buff"].get("starting_lemons", 0)
+        game["characters"][pid] = char_name
+
+        game["lemons"][pid] = 100
+
+        start_bonus = char_data["buff"].get("starting_lemons", 0)
+        game["lemons"][pid] += start_bonus
+
         if char_data["buff"].get("roll_bonus"):
             roll = random.randint(1, 5)
             bonus = roll * 5
             game["lemons"][pid] += bonus
             await context.bot.send_message(pid, f"🎲 {char_name} re‑rolled {roll}! +{bonus} lemons. Total: {game['lemons'][pid]}.")
 
+        if "min_bid" in char_data["debuff"]:
+            game.setdefault("min_bid", {})[pid] = char_data["debuff"]["min_bid"]
+        if "lose_extra_on_loss" in char_data["debuff"]:
+            game.setdefault("lose_extra_on_loss", {})[pid] = char_data["debuff"]["lose_extra_on_loss"]
+        if "lose_lemons_on_win" in char_data["debuff"]:
+            game.setdefault("lose_lemons_on_win", {})[pid] = char_data["debuff"]["lose_lemons_on_win"]
+        if "gap_bn_next" in char_data["debuff"]:
+            game.setdefault("gap_bn_next", {})[pid] = char_data["debuff"]["gap_bn_next"]
+        if "gap_bn_winner" in char_data["debuff"]:
+            game.setdefault("gap_bn_winner", {})[pid] = char_data["debuff"]["gap_bn_winner"]
+        if "lose_lemons" in char_data["debuff"]:
+            game.setdefault("lose_lemons", {})[pid] = char_data["debuff"]["lose_lemons"]
+
+        if "bonus_crowns_on_high_chest" in char_data["buff"]:
+            game.setdefault("bonus_crowns_on_high_chest", {})[pid] = char_data["buff"]["bonus_crowns_on_high_chest"]
+            game.setdefault("high_chest_threshold", {})[pid] = char_data["buff"]["high_chest_threshold"]
+        if "steal_on_win" in char_data["buff"]:
+            game.setdefault("steal_on_win", {})[pid] = char_data["buff"]["steal_on_win"]
+        if "gain_vp_on_loss" in char_data["buff"]:
+            game.setdefault("gain_vp_on_loss", {})[pid] = char_data["buff"]["gain_vp_on_loss"]
+        if "gain_half_on_tie" in char_data["buff"]:
+            game.setdefault("gain_half_on_tie", {})[pid] = char_data["buff"]["gain_half_on_tie"]
+        if "see_lowest_bid" in char_data["buff"]:
+            game.setdefault("see_lowest_bid", {})[pid] = char_data["buff"]["see_lowest_bid"]
+
+        await context.bot.send_message(
+            pid,
+            f"🔄 New character: <b>{char_name}</b>.\n<i>{char_data['description']}</i>",
+            parse_mode='HTML'
+        )
+
     await start_next_round(context, game, game_id)
-    
-    await query.edit_message_text("✅ Game restarted! Check your DMs for the new round.")
+    await query.edit_message_text("✅ Game restarted with new characters!")
 
 async def leave_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
