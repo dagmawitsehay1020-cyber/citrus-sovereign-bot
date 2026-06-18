@@ -6,6 +6,9 @@ import asyncio
 import os
 import threading
 from flask import Flask
+from dotenv import load_dotenv
+
+load_dotenv()
 
 web_app = Flask(__name__)
 
@@ -1164,7 +1167,7 @@ def main():
     web_thread.start()
 
 
-    TOKEN = os.environ.get("BOT_TOKEN", "8826395440:AAHt97Os184a6bg95GcxPUIZdQP42_CVACE")
+    TOKEN = os.environ.get("BOT_TOKEN")
     application = Application.builder().token(TOKEN).build()
 
     application.add_handler(CommandHandler("start", start_command))
